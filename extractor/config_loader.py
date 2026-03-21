@@ -38,7 +38,7 @@ class SurfaceTreatments(BaseModel):
 class Signals(BaseModel):
     """Signal patterns for extraction."""
     tolerated_lengths: list[ToleratedLengthSignal] = Field(
-        default_factory=list, alias="tolerated_lengths"
+        default_factory=list
     )
     holes: list[HoleSignal] = []
 

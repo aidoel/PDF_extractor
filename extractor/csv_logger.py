@@ -21,6 +21,7 @@ def log_pdf_result(
     elapsed_time: float,
     error: str,
     customer: str,
+    prompt_version: str = "",
 ) -> None:
     """
     Log a single PDF extraction result to the daily CSV log.
@@ -32,6 +33,7 @@ def log_pdf_result(
         elapsed_time: Time taken to process the PDF in seconds
         error: Error message if failed, empty string if successful
         customer: Detected customer name
+        prompt_version: Version identifier of the prompt used
     """
     log_file = get_log_file_path()
     file_exists = log_file.exists()
@@ -43,7 +45,7 @@ def log_pdf_result(
 
         # Write header if file is new
         if not file_exists:
-            writer.writerow(["Timestamp", "Order", "PDF", "Status", "Time(s)", "Error", "Customer"])
+            writer.writerow(["Timestamp", "Order", "PDF", "Status", "Time(s)", "Error", "Customer", "PromptVersion"])
 
         # Write the log entry
         writer.writerow([
@@ -54,4 +56,5 @@ def log_pdf_result(
             f"{elapsed_time:.1f}",
             error,
             customer,
+            prompt_version,
         ])

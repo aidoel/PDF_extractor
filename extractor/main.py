@@ -33,6 +33,7 @@ from rich.progress import (
 from .constants import DEFAULT_GEMINI_MODEL
 from .csv_logger import log_pdf_result
 from .customer_detection import detect_customer_from_pdf_vision
+from .prompt_builder import PROMPT_VERSION
 from .gemini_service import extract_order_details_from_pdf, read_pdf_as_base64
 from .types import ExtractionOptions, OrderDetails, OrderItem, ProcessingMetadata
 from .xml_writer import build_simple_order_xml
@@ -333,6 +334,7 @@ async def extract_batch(
                         elapsed_time=elapsed_time,
                         error="",
                         customer=detected_customer_name,
+                        prompt_version=PROMPT_VERSION,
                     )
                 else:
                     fail_count += 1
@@ -347,6 +349,7 @@ async def extract_batch(
                         elapsed_time=elapsed_time,
                         error="Empty response",
                         customer=detected_customer_name,
+                        prompt_version=PROMPT_VERSION,
                     )
 
                 # Rate limiting: 1 second between PDFs
@@ -371,6 +374,7 @@ async def extract_batch(
                     elapsed_time=elapsed_time,
                     error=error_msg,
                     customer=detected_customer_name,
+                    prompt_version=PROMPT_VERSION,
                 )
 
             progress.advance(task_id)

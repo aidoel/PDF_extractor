@@ -14,6 +14,7 @@ from .config_loader import (
     get_max_signal_prompt_entries,
 )
 from .prompt_builder import (
+    PROMPT_VERSION,
     PromptInput,
     build_assembly_prompt,
     build_minimal_prompt,
@@ -43,6 +44,8 @@ ORDER_DETAILS_SCHEMA = {
                                 "diameter": {"type": "string"},
                                 "threadSize": {"type": "string"},
                                 "tolerance": {"type": "string"},
+                                "depth": {"type": "string"},
+                                "location": {"type": "string"},
                                 "notes": {"type": "string"},
                             },
                         },
@@ -270,9 +273,8 @@ async def extract_order_details_from_pdf(
             response_mime_type="application/json",
             response_schema=ORDER_DETAILS_SCHEMA,
             temperature=0.0,
-            top_p=1.0,
-            top_k=1,
-            max_output_tokens=8192,
+            top_p=0.1,
+            max_output_tokens=4096,
         ),
     )
 

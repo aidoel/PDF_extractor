@@ -97,38 +97,6 @@ Your response should be a single word: either the customer name or UNKNOWN."""
         )
 
 
-def detect_customer_from_text(pdf_text: str) -> CustomerDetectionResult:
-    """
-    Detect customer from PDF text content (DEPRECATED - kept for fallback).
-
-    Args:
-        pdf_text: Extracted text from PDF
-
-    Returns:
-        CustomerDetectionResult with customer, confidence, and reason
-    """
-    text_lower = pdf_text.lower()
-
-    if "rademaker" in text_lower:
-        return CustomerDetectionResult(
-            customer="rademaker",
-            confidence="medium",
-            reason='Detected "rademaker" in text',
-        )
-    elif "elten" in text_lower:
-        return CustomerDetectionResult(
-            customer="elten",
-            confidence="medium",
-            reason='Detected "elten" in text',
-        )
-    else:
-        return CustomerDetectionResult(
-            customer="base",
-            confidence="low",
-            reason="No customer name found in text - using base configuration",
-        )
-
-
 # Synchronous wrapper
 def detect_customer_from_pdf_vision_sync(pdf_base64: str) -> CustomerDetectionResult:
     """Synchronous version of detect_customer_from_pdf_vision."""

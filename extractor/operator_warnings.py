@@ -52,7 +52,7 @@ def group_tapped_holes(holes: list[dict[str, Any]]) -> str:
     grouped: dict[str, int] = {}
 
     for hole in holes:
-        size = hole.get("threadSize") or hole.get("thread_size") or "Unknown"
+        size = hole.get("threadSize") or "Unknown"
         tolerance = hole.get("tolerance", "")
         if tolerance and tolerance not in ["None", "null", ""]:
             key = f"{size} ({tolerance})"
@@ -90,9 +90,9 @@ def group_hole_tolerances(holes: list[dict[str, Any]]) -> str:
 
         if hole.get("tolerance"):
             tol = f" {hole['tolerance']}"
-        elif hole.get("upperTolerance") or hole.get("upper_tolerance") or hole.get("lowerTolerance") or hole.get("lower_tolerance"):
-            upper = hole.get("upperTolerance") or hole.get("upper_tolerance") or "+0"
-            lower = hole.get("lowerTolerance") or hole.get("lower_tolerance") or "-0"
+        elif hole.get("upperTolerance") or hole.get("lowerTolerance"):
+            upper = hole.get("upperTolerance") or "+0"
+            lower = hole.get("lowerTolerance") or "-0"
             tol = f" {upper}/{lower}"
 
         key = f"{dia}{tol}"
@@ -142,7 +142,7 @@ def generate_operator_warnings(item: ExtractedItem) -> list[OperatorWarning]:
         all_details.extend([
             WarningDetail(
                 type="tappedHole",
-                thread_size=h.get("threadSize") or h.get("thread_size"),
+                thread_size=h.get("threadSize"),
                 count=h.get("count", 1) or 1,
             )
             for h in tapped_holes
@@ -156,9 +156,7 @@ def generate_operator_warnings(item: ExtractedItem) -> list[OperatorWarning]:
         and (
             h.get("tolerance")
             or h.get("upperTolerance")
-            or h.get("upper_tolerance")
             or h.get("lowerTolerance")
-            or h.get("lower_tolerance")
         )
     ]
 
@@ -170,8 +168,8 @@ def generate_operator_warnings(item: ExtractedItem) -> list[OperatorWarning]:
                 type="hole",
                 diameter=str(h.get("diameter", "")),
                 tolerance=h.get("tolerance"),
-                tolerance_upper=h.get("upperTolerance") or h.get("upper_tolerance"),
-                tolerance_lower=h.get("lowerTolerance") or h.get("lower_tolerance"),
+                tolerance_upper=h.get("upperTolerance"),
+                tolerance_lower=h.get("lowerTolerance"),
                 count=h.get("count", 1) or 1,
             )
             for h in holes_with_tolerance
@@ -180,12 +178,10 @@ def generate_operator_warnings(item: ExtractedItem) -> list[OperatorWarning]:
     # 3. CHECK CRITICAL DIMENSIONS WITH TOLERANCES
     critical_with_tolerance = [
         c for c in item.critical_lengths
-        if (c.get("toleranceType") or c.get("tolerance_type")) != "parenthesized"
+        if c.get("toleranceType") != "parenthesized"
         and (
             c.get("upperTolerance")
-            or c.get("upper_tolerance")
             or c.get("lowerTolerance")
-            or c.get("lower_tolerance")
         )
     ]
 
@@ -196,8 +192,8 @@ def generate_operator_warnings(item: ExtractedItem) -> list[OperatorWarning]:
             WarningDetail(
                 type="dimension",
                 value=str(c.get("dimension", "")),
-                tolerance_upper=c.get("upperTolerance") or c.get("upper_tolerance"),
-                tolerance_lower=c.get("lowerTolerance") or c.get("lower_tolerance"),
+                tolerance_upper=c.get("upperTolerance"),
+                tolerance_lower=c.get("lowerTolerance"),
             )
             for c in critical_with_tolerance
         ])

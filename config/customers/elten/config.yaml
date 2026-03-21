@@ -51,18 +51,11 @@ signals:
         type: "tapped"
 
 # ============================================================================
-# HOLE DETECTION - CRITICAL INSTRUCTIONS
-# ============================================================================
-
-prompt_additions_holes:
-  - "(Uses base rules)"
-
-# ============================================================================
 # ELTEN MATERIAAL VOORKEUREN
 # ============================================================================
 
 prompt_additions:
-  surfaceTreatment:
+  surface_treatment:
     - "CRITICAL FOR ELTEN: The BOM table (bottom right) contains coating info mixed with part descriptions."
     - "Scan EVERY cell in the BOM table for coating keywords like 'coating dynamic', 'coating static', 'poedercoaten', 'verzinken', 'parelstralen'."
     - "If you find ANY coating keyword in the BOM, extract it as the surface treatment."
