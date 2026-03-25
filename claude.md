@@ -42,7 +42,7 @@ Unlike other frontier models that require image conversion, Gemini accepts raw P
 | `gemini-1.5-flash` | €0.020* | ~20s | ~98%* | Older flash. Prefer 2.0-flash. |
 | `gemini-1.5-flash-8b` | €0.008* | ~12s | ~94%* | Smallest. Simple drawings only. |
 
-`*` = estimated from Google pricing; not benchmarked on this dataset.
+`*` = estimated from Google pricing
 
 Override via CLI: `--model gemini-2.0-flash`
 Default set in `extractor/constants.py`.
