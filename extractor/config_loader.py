@@ -1,5 +1,6 @@
 """Configuration loader with YAML support and deep merging."""
 
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -86,14 +87,20 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
 def find_config_root() -> Path:
     """Find the config root directory."""
+    # When bundled by PyInstaller, data files are extracted under _MEIPASS.
+    meipass = getattr(sys, "_MEIPASS", None)
+
     # Check multiple possible locations
     possible_paths = [
+        Path(meipass) / "config" if meipass else None,
         Path(__file__).parent.parent / "config",
         Path.cwd() / "config",
         Path.cwd() / "python_version" / "config",
     ]
 
     for path in possible_paths:
+        if path is None:
+            continue
         if path.exists():
             return path
 

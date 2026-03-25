@@ -3,7 +3,12 @@
 from typing import Optional, Literal
 from pydantic import BaseModel, Field
 
-from .constants import DEFAULT_GEMINI_MODEL
+from .constants import (
+    DEFAULT_GEMINI_MODEL,
+    DEFAULT_MODEL_PROVIDER,
+    DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_OLLAMA_MODE,
+)
 
 
 class HoleDetails(BaseModel):
@@ -101,7 +106,13 @@ class ExtractionOptions(BaseModel):
     customer_id: str = Field(default="elten", alias="customerId")
     text_signals: list[TextSignal] = Field(default_factory=list, alias="textSignals")
     pdf_filename: Optional[str] = Field(None, alias="pdfFilename")
+    provider: Literal["gemini", "ollama"] = DEFAULT_MODEL_PROVIDER
     model: str = DEFAULT_GEMINI_MODEL
+    ollama_base_url: str = Field(DEFAULT_OLLAMA_BASE_URL, alias="ollamaBaseUrl")
+    ollama_mode: Literal["auto", "text", "vision"] = Field(
+        DEFAULT_OLLAMA_MODE,
+        alias="ollamaMode",
+    )
     is_assembly: bool = Field(default=False, alias="isAssembly")
 
     class Config:

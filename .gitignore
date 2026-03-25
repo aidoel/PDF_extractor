@@ -38,3 +38,6 @@ logs/
 # Test PDFs and output XMLs
 *.pdf
 PDF_XML_*.xml
+
+# Documentation build output
+site/

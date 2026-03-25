@@ -1,0 +1,38 @@
+[project]
+site_name = "PDF Technical Drawing Extractor"
+site_description = "Production documentation for the ALES PDF extractor"
+site_url = "https://example.com/pdf-extractor-docs"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Getting Started" = "guides/getting-started.md" },
+  { "Usage" = "guides/usage.md" },
+  { "Build & Distribution" = "guides/build-and-distribution.md" },
+  { "Architecture" = "reference/architecture.md" },
+  { "Configuration" = "reference/configuration.md" },
+]
+
+[project.theme]
+language = "en"
+features = [
+  "content.code.copy",
+  "navigation.tabs",
+  "navigation.sections",
+  "navigation.footer",
+  "navigation.instant",
+  "search.highlight",
+]
+
+[[project.theme.palette]]
+scheme = "default"
+primary = "indigo"
+accent = "amber"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+primary = "indigo"
+accent = "amber"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"

@@ -2,7 +2,7 @@
 """
 PDF Extractor CLI
 
-Extract manufacturing data from technical drawing PDFs using Gemini AI.
+Extract manufacturing data from technical drawing PDFs using Gemini or Ollama.
 
 Usage:
     pdf-extract <pdf_file>
@@ -30,10 +30,17 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from .constants import DEFAULT_GEMINI_MODEL
+from .constants import (
+    DEFAULT_GEMINI_MODEL,
+    DEFAULT_MODEL_PROVIDER,
+    DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_OLLAMA_MODE,
+    DEFAULT_OLLAMA_MODEL,
+)
 from .csv_logger import log_pdf_result
 from .customer_detection import detect_customer_from_pdf_vision
-from .gemini_service import extract_order_details_from_pdf, read_pdf_as_base64
+from .gemini_service import read_pdf_as_base64
+from .model_service import extract_order_details
 from .types import ExtractionOptions, OrderDetails, OrderItem, ProcessingMetadata
 from .utils import setup_environment
 from .xml_writer import build_simple_order_xml
@@ -69,7 +76,7 @@ async def process_with_retry(
 
     for attempt in range(max_retries + 1):
         try:
-            result = await extract_order_details_from_pdf(pdf_base64, options)
+            result = await extract_order_details(pdf_base64, options)
             if attempt > 0:
                 console.print(f"[green]Success after {attempt} retry(ies)[/green]")
             return result
@@ -145,6 +152,9 @@ async def extract_single_pdf(
     output_dir: Optional[Path] = None,
     xml_path: Optional[Path] = None,
     model: str = DEFAULT_GEMINI_MODEL,
+    provider: str = DEFAULT_MODEL_PROVIDER,
+    ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
+    ollama_mode: str = DEFAULT_OLLAMA_MODE,
 ) -> OrderDetails:
     """
     Extract data from a single PDF.
@@ -154,7 +164,10 @@ async def extract_single_pdf(
         customer_id: Customer ID (elten, rademaker, base)
         output_dir: Optional output directory override
         xml_path: Optional explicit XML output path
-        model: Gemini model to use
+        model: Model name for selected provider
+        provider: Backend provider (gemini or ollama)
+        ollama_base_url: Ollama server URL when provider=ollama
+        ollama_mode: Ollama extraction mode (auto, text, vision)
 
     Returns:
         OrderDetails with extracted data
@@ -167,11 +180,17 @@ async def extract_single_pdf(
     pdf_name = pdf_path.stem
 
     console.print(f"[blue]Processing PDF: {pdf_name}[/blue]")
+    console.print(f"[dim]Provider={provider} | model={model}[/dim]")
+    if provider == "ollama":
+        console.print(f"[dim]Ollama mode={ollama_mode}[/dim]")
 
     options = ExtractionOptions(
         customer_id=customer_id,
         pdf_filename=pdf_name,
+        provider=provider,
         model=model,
+        ollama_base_url=ollama_base_url,
+        ollama_mode=ollama_mode,
     )
 
     with Progress(
@@ -179,7 +198,7 @@ async def extract_single_pdf(
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        progress.add_task(description="Extracting with Gemini...", total=None)
+        progress.add_task(description=f"Extracting with {provider}...", total=None)
         data = await process_with_retry(pdf_base64, options)
 
     # Determine output path: PDF_XML_<folder_name>.xml
@@ -249,6 +268,9 @@ async def extract_batch(
     customer_id: str = "auto",
     output_dir: Optional[Path] = None,
     model: str = DEFAULT_GEMINI_MODEL,
+    provider: str = DEFAULT_MODEL_PROVIDER,
+    ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
+    ollama_mode: str = DEFAULT_OLLAMA_MODE,
 ) -> OrderDetails:
     """
     Extract data from all PDFs in a folder.
@@ -257,7 +279,10 @@ async def extract_batch(
         pdfs_folder: Folder containing PDF files
         customer_id: Customer ID or "auto" for auto-detection
         output_dir: Optional output directory override
-        model: Gemini model to use
+        model: Model name for selected provider
+        provider: Backend provider (gemini or ollama)
+        ollama_base_url: Ollama server URL when provider=ollama
+        ollama_mode: Ollama extraction mode (auto, text, vision)
 
     Returns:
         Combined OrderDetails for the entire batch
@@ -280,8 +305,8 @@ async def extract_batch(
         output_dir = pdfs_folder
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Auto-detect customer from the first PDF
-    if customer_id == "auto":
+    # Auto-detect customer from the first PDF (Gemini only)
+    if customer_id == "auto" and provider == "gemini":
         console.print("[blue]Auto-detecting customer from first PDF...[/blue]")
         first_pdf_base64 = read_pdf_as_base64(pdf_files[0])
         detection = await detect_customer_from_pdf_vision(first_pdf_base64)
@@ -291,10 +316,17 @@ async def extract_batch(
             f"({detection.confidence} confidence)[/green]"
         )
         console.print(f"[dim]Reason: {detection.reason}[/dim]")
+    elif customer_id == "auto" and provider == "ollama":
+        console.print("[yellow]Auto customer detection is Gemini-only. Falling back to customer='base' for Ollama.[/yellow]")
+        customer_id = "base"
+        console.print(f"[blue]Using customer: {customer_id}[/blue]")
     else:
         console.print(f"[blue]Using customer: {customer_id}[/blue]")
 
     console.print(f"\n[blue]Processing {len(pdf_files)} PDFs...[/blue]")
+    console.print(f"[dim]Provider={provider} | model={model}[/dim]")
+    if provider == "ollama":
+        console.print(f"[dim]Ollama mode={ollama_mode}[/dim]")
 
     all_items: list[OrderItem] = []
     failed_items: list[OrderItem] = []
@@ -326,7 +358,10 @@ async def extract_batch(
                 options = ExtractionOptions(
                     customer_id=customer_id,
                     pdf_filename=pdf_name,
+                    provider=provider,
                     model=model,
+                    ollama_base_url=ollama_base_url,
+                    ollama_mode=ollama_mode,
                 )
                 data = await process_with_retry(pdf_base64, options)
                 await circuit_breaker.record_success()
@@ -416,7 +451,10 @@ async def extract_batch(
                 assembly_options = ExtractionOptions(
                     customer_id=customer_id,
                     pdf_filename=assembly_part_number,
+                    provider=provider,
                     model=model,
+                    ollama_base_url=ollama_base_url,
+                    ollama_mode=ollama_mode,
                     is_assembly=True,
                 )
                 assembly_data = await process_with_retry(assembly_base64, assembly_options)
@@ -460,13 +498,42 @@ async def extract_batch(
 @click.option("--customer", "-c", default="elten", help="Customer ID (elten, rademaker, base, auto)")
 @click.option("--output", "-o", type=click.Path(), help="Output directory")
 @click.option("--xml", "xml_path", type=click.Path(), help="Explicit XML output path")
-@click.option("--model", "-m", default=DEFAULT_GEMINI_MODEL, help="Gemini model to use")
+@click.option(
+    "--provider",
+    type=click.Choice(["gemini", "ollama"], case_sensitive=False),
+    default=DEFAULT_MODEL_PROVIDER,
+    show_default=True,
+    help="Extraction backend provider",
+)
+@click.option(
+    "--model",
+    "-m",
+    default=DEFAULT_GEMINI_MODEL,
+    show_default=True,
+    help="Model name for selected provider (e.g. gemini-2.5-pro or llama3.1:8b)",
+)
+@click.option(
+    "--ollama-url",
+    default=DEFAULT_OLLAMA_BASE_URL,
+    show_default=True,
+    help="Ollama base URL (used when --provider ollama)",
+)
+@click.option(
+    "--ollama-mode",
+    type=click.Choice(["auto", "text", "vision"], case_sensitive=False),
+    default=DEFAULT_OLLAMA_MODE,
+    show_default=True,
+    help="Ollama extraction mode: auto selects based on model name",
+)
 def cli(
     pdf_path: str,
     customer: str,
     output: Optional[str],
     xml_path: Optional[str],
+    provider: str,
     model: str,
+    ollama_url: str,
+    ollama_mode: str,
 ) -> None:
     """
     Extract manufacturing data from technical drawing PDFs.
@@ -480,9 +547,18 @@ def cli(
     Batch mode (folder with PDFs):
         pdf-extract /path/to/pdfs/
         pdf-extract /path/to/pdfs/ --customer auto
+
+    \b
+    Ollama mode:
+        pdf-extract drawing.pdf --provider ollama --model qwen2.5vl:7b --ollama-mode vision --customer base
     """
     path = Path(pdf_path)
     out = Path(output) if output else None
+
+    provider = provider.lower()
+    if provider == "ollama" and model == DEFAULT_GEMINI_MODEL:
+        model = DEFAULT_OLLAMA_MODEL
+    ollama_mode = ollama_mode.lower()
 
     if path.is_dir():
         asyncio.run(
@@ -490,7 +566,10 @@ def cli(
                 pdfs_folder=path,
                 customer_id=customer,
                 output_dir=out,
+                provider=provider,
                 model=model,
+                ollama_base_url=ollama_url,
+                ollama_mode=ollama_mode,
             )
         )
     else:
@@ -500,7 +579,10 @@ def cli(
                 customer_id=customer,
                 output_dir=out,
                 xml_path=Path(xml_path) if xml_path else None,
+                provider=provider,
                 model=model,
+                ollama_base_url=ollama_url,
+                ollama_mode=ollama_mode,
             )
         )
 

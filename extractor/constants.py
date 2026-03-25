@@ -1,5 +1,10 @@
 """Global constants for the extractor application."""
 
+DEFAULT_MODEL_PROVIDER = "gemini"
+DEFAULT_OLLAMA_MODEL = "llama3.1:8b"
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+DEFAULT_OLLAMA_MODE = "auto"
+
 # ---------------------------------------------------------------------------
 # Gemini Model Selection
 # ---------------------------------------------------------------------------
