@@ -7,7 +7,7 @@ setup(
     packages=find_packages(),
     python_requires=">=3.10",
     install_requires=[
-        "google-generativeai>=0.8.0",
+        "google-genai>=1.0.0",
         "pyyaml>=6.0",
         "python-dotenv>=1.0.0",
         "pydantic>=2.0.0",
@@ -17,6 +17,7 @@ setup(
     entry_points={
         "console_scripts": [
             "pdf-extract=extractor.main:cli",
+            "email-intake=email_intake.cli:cli",
         ],
     },
 )

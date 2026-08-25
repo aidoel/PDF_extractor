@@ -30,6 +30,7 @@ Thumbs.db
 # Test output
 test_output/
 test_samples/
+poc-data/
 
 # Logs
 *.log

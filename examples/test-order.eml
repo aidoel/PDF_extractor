@@ -1,0 +1,33 @@
+From: Test Klant <orders@example.test>
+To: Calculatie <calculatie@example.test>
+Date: Tue, 25 Aug 2026 10:00:00 +0200
+Message-ID: <poc-1001@example.test>
+Subject: Testorder POC-1001
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="poc-boundary"
+
+--poc-boundary
+Content-Type: text/plain; charset="utf-8"
+
+Bijgevoegd staan de tekening en het STEP-model voor twee stuks POC-1001.
+
+--poc-boundary
+Content-Type: application/pdf
+Content-Disposition: attachment; filename="POC-1001.pdf"
+Content-Transfer-Encoding: 7bit
+
+%PDF-1.4
+% POC-DATA: {"part_number":"POC-1001","quantity":2,"material":"S235JR","thickness_mm":3.0,"surface_treatment":"Poedercoaten zwart"}
+%%EOF
+
+--poc-boundary
+Content-Type: application/step
+Content-Disposition: attachment; filename="POC-1001.step"
+Content-Transfer-Encoding: 7bit
+
+ISO-10303-21;
+/* POC-DATA: {"part_number":"POC-1001","material":"S235JR","thickness_mm":3.0} */
+END-ISO-10303-21;
+
+--poc-boundary--
+

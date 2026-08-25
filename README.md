@@ -2,6 +2,35 @@
 
 Extract manufacturing data from technical drawing PDFs using Gemini AI.
 
+## E-mailintake proof of concept
+
+De repository bevat ook een volledig lokale proefopstelling voor een toekomstige
+mailbox- en alesERP-koppeling. De POC leest een `.eml`-bestand, bewaart PDF- en
+STEP-bijlagen veilig, vergelijkt onderdeelnummer/materiaal/dikte en schrijft bij
+een foutloze match een `DRAFT_ONLY` alesERP-concept als JSON. De meegeleverde
+adapters lezen bewust testmetadata; er wordt nog geen echte mailbox, STEP-engine,
+Gemini-service of ERP aangeroepen.
+
+```powershell
+python -m email_intake process examples/test-order.eml --workspace poc-data
+```
+
+Een lokale inboxmap kan eenmalig of herhaald worden gescand:
+
+```powershell
+python -m email_intake watch examples --workspace poc-data --once
+```
+
+Start de lokale webinterface (bedoeld om via Tailscale Serve te publiceren):
+
+```powershell
+python -m email_intake web --port 8780 --workspace poc-data
+```
+
+De SQLite-jobledger voorkomt dat dezelfde mail en bijlagen tweemaal een concept
+aanmaken. Verschillen tussen PDF en STEP krijgen status `NEEDS_REVIEW` en leveren
+geen ERP-concept op.
+
 ## Installatie
 
 ### Windows (Aanbevolen - Automatisch)
