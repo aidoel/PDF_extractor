@@ -10,7 +10,11 @@ from extractor.gemini_service import (
     normalize_holes,
     normalize_machining_operations,
 )
-from extractor.integration_cli import INTEGRATION_SCHEMA_VERSION, build_compact_summary, run
+from extractor.integration_cli import (
+    INTEGRATION_SCHEMA_VERSION,
+    build_compact_summary,
+    run,
+)
 from extractor.main import should_run_gemini
 from extractor.pdf_preflight import PdfPreflightResult
 from extractor.types import ExtractionOptions, OrderDetails, ProcessingMetadata
@@ -92,7 +96,11 @@ def test_post_processing_can_be_followed_by_final_pydantic_validation() -> None:
             {
                 "partNumber": "P-1",
                 "machiningOperations": [
-                    {"normalizedCode": "TAP", "operation": "tapping", "threadSize": "M6"}
+                    {
+                        "normalizedCode": "TAP",
+                        "operation": "tapping",
+                        "threadSize": "M6",
+                    }
                 ],
             }
         ]
@@ -147,7 +155,12 @@ def test_compact_summary_contains_pdf_headline_results() -> None:
                 "revision": "B",
                 "holes": [{"count": 3, "diameter": "6 mm"}],
                 "toleratedLengths": [{"dimension": "20", "upperTolerance": "+0.1"}],
-                "machiningOperations": [{"normalizedCode": "TAP", "operation": "tapping"}],
+                "machiningOperations": [
+                    {"normalizedCode": "TAP", "operation": "tapping"}
+                ],
+                "technicalAnalysis": {
+                    "conclusion": "Controleer de expliciete M6 draadnotitie."
+                },
             }
         ],
     )
@@ -158,3 +171,161 @@ def test_compact_summary_contains_pdf_headline_results() -> None:
     assert summary["operations"] == ["TAP"]
     assert summary["hole_count"] == 3
     assert summary["tolerance_count"] == 1
+    assert summary["analysis_text"] == (
+        "materiaal S235; 3 x gat 6 mm; lengtetolerantie 20 +0,1; powder coating"
+    )
+
+
+def test_compact_summary_is_empty_when_light_finds_nothing() -> None:
+    summary = build_compact_summary(OrderDetails(), gemini_used=False)
+
+    assert summary["analysis_text"] == ""
+
+
+def test_compact_summary_is_empty_when_gemini_finds_nothing() -> None:
+    summary = build_compact_summary(OrderDetails(), gemini_used=True)
+
+    assert summary["analysis_text"] == ""
+
+
+def test_compact_summary_includes_mapping_tolerance_and_roughness_signals() -> None:
+    data = OrderDetails(
+        items=[{"partNumber": "10040878_1"}],
+        detectedSignals=[
+            {"category": "TOLERANCE", "rawValue": "90° ±0.5°"},
+            {"category": "ROUGHNESS", "rawValue": "Ra 3.2"},
+        ],
+    )
+
+    summary = build_compact_summary(data, gemini_used=True)
+
+    assert summary["tolerance_count"] == 1
+    assert summary["analysis_text"] == (
+        "tolerantie 90 graden ±0,5 graden; ruwheid Ra 3,2"
+    )
+
+
+def test_compact_summary_does_not_repeat_roughness_label() -> None:
+    data = OrderDetails(
+        items=[{"partNumber": "P-1"}],
+        detectedSignals=[
+            {"category": "ROUGHNESS", "rawValue": "ruwheden volgens NEN 3632"}
+        ],
+    )
+
+    summary = build_compact_summary(data, gemini_used=True)
+
+    assert summary["analysis_text"] == "ruwheden volgens NEN 3632"
+
+
+def test_compact_summary_includes_explicit_operation_notes() -> None:
+    data = OrderDetails(
+        items=[
+            {
+                "partNumber": "10040878_1",
+                "machiningOperations": [
+                    {
+                        "normalizedCode": "WELD",
+                        "operation": "welding",
+                        "evidence": "General welding agreements",
+                        "notes": "weld 50 mm, leave 100 mm free",
+                    }
+                ],
+            }
+        ]
+    )
+
+    summary = build_compact_summary(data, gemini_used=True)
+
+    assert summary["analysis_text"] == (
+        "General welding agreements: weld 50 mm, leave 100 mm free"
+    )
+
+
+def test_compact_summary_uses_terse_manufacturing_facts() -> None:
+    data = OrderDetails(
+        items=[
+            {
+                "machiningOperations": [
+                    {
+                        "normalizedCode": "DEBURR",
+                        "count": 8,
+                        "cuttingSize": "0.5x45°",
+                        "evidence": "0.5x45° (8x)",
+                    }
+                ],
+                "toleratedLengths": [
+                    {
+                        "dimension": "502",
+                        "upperTolerance": "0",
+                        "lowerTolerance": "-0.2",
+                        "evidence": "502 0/-0.2",
+                    },
+                    {
+                        "dimension": "Ø25 h6",
+                        "toleranceType": "shaft_fit",
+                        "evidence": "Ø25 h6",
+                    },
+                ],
+                "surfaceTreatment": "bead blasted",
+            }
+        ]
+    )
+
+    summary = build_compact_summary(data, gemini_used=True)
+
+    assert summary["analysis_text"] == (
+        "8 x afschuining 0,5x45 graden; lengtetolerantie 502 0/-0,2; "
+        "aspassing: diameter 25 h6; bead blasted"
+    )
+
+
+def test_compact_summary_ignores_placeholder_cutting_size() -> None:
+    data = OrderDetails(
+        items=[
+            {
+                "machiningOperations": [
+                    {
+                        "normalizedCode": "DEBURR",
+                        "operation": "Deburring",
+                        "cuttingSize": "None",
+                        "evidence": "Break sharp edges, retaining ring grooves sharp",
+                    }
+                ]
+            }
+        ]
+    )
+
+    summary = build_compact_summary(data, gemini_used=True)
+
+    assert "afschuining None" not in summary["analysis_text"]
+    assert summary["analysis_text"] == (
+        "scherpe kanten breken; borgringgroeven scherp houden"
+    )
+
+
+def test_compact_summary_shortens_standard_welding_instructions() -> None:
+    data = OrderDetails(
+        items=[
+            {
+                "machiningOperations": [
+                    {
+                        "normalizedCode": "WELD",
+                        "evidence": "General agreements for welded assemblies unless otherwise indicated:",
+                        "notes": (
+                            "1. Tube frames + end plates welded on all sides "
+                            "2. Sheet metal interrupted welding (weld 50 [mm], 100 [mm] free) "
+                            "3. Keep holes free of welds"
+                        ),
+                    }
+                ]
+            }
+        ]
+    )
+
+    summary = build_compact_summary(data, gemini_used=True)
+
+    assert summary["analysis_text"] == (
+        "frame en eindplaten rondom lassen; plaatlassen 50 mm lassen/100 mm vrij; "
+        "gaten vrijhouden van lassen"
+    )

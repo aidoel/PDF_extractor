@@ -4,15 +4,15 @@ import base64
 import json
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from google import genai
 from google.genai import types
 
 from .config_loader import (
     CustomerConfig,
-    load_customer_config,
     get_max_signal_prompt_entries,
+    load_customer_config,
 )
 from .prompt_builder import (
     PromptInput,
@@ -23,7 +23,6 @@ from .prompt_builder import (
 )
 from .types import ExtractionOptions, OrderDetails
 from .utils import get_api_key
-
 
 # JSON schema for Gemini structured output
 ORDER_DETAILS_SCHEMA = {
@@ -192,7 +191,7 @@ def read_pdf_as_base64(pdf_path: Path) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
-def normalize_surface_treatment(value: Any) -> Optional[str]:
+def normalize_surface_treatment(value: Any) -> str | None:
     """Normalize surface treatment value."""
     if value is None:
         return None
@@ -204,9 +203,9 @@ def normalize_surface_treatment(value: Any) -> Optional[str]:
 
 def apply_customer_surface_treatment_fixes(
     customer_id: str,
-    extracted: Optional[str],
+    extracted: str | None,
     is_assembly: bool,
-) -> Optional[str]:
+) -> str | None:
     """Apply customer-specific surface treatment fixes."""
     if not extracted:
         return extracted
@@ -251,6 +250,206 @@ def _clean_code(value: Any) -> str:
     return _clean_text(value).upper()
 
 
+_EXPLICIT_OPERATION_PATTERNS = {
+    "DRILL": re.compile(
+        r"(?i)\b(?:boor(?:gat(?:en)?|werk)?|boren|drill(?:ed|ing|hole|holes)?)\b"
+    ),
+    "MILL": re.compile(r"(?i)\b(?:frees\w*|frez(?:en|erij)|mill(?:ed|ing)?)\b"),
+    "TURN": re.compile(
+        r"(?i)\b(?:draai(?:en|werk|bank|bewerking)?|turn(?:ed|ing)?|lathe)\b"
+    ),
+    "REAM": re.compile(
+        r"(?i)\b(?:ruim(?:en|ing|gat(?:en)?)?|ream(?:ed|ing|hole|holes)?)\b"
+    ),
+    "COUNTERSINK": re.compile(
+        r"(?i)(?:\b(?:verzink\w*|verzonk\w*|countersink\w*)\b|\bDIN\s*74\b|[⌵⌄])"
+    ),
+    "COUNTERBORE": re.compile(
+        r"(?i)(?:\b(?:cilinderverzink\w*|counterbor\w*|spotface\w*)\b|⌴)"
+    ),
+}
+_TAP_TERM_PATTERN = re.compile(
+    r"(?i)\b(?:tap(?:pen|gat(?:en)?|ped|ping)?|draadgat(?:en)?|threaded\s+hole(?:s)?)\b"
+)
+_THREAD_SIZE_PATTERN = re.compile(r"(?i)\bM\s*[0-9]+(?:[.,][0-9]+)?\b")
+_THREAD_COMPONENT_PATTERN = re.compile(
+    r"(?i)\b(?:draadstang|draadeind|threaded\s+(?:rod|stud)|stud|bolt|bout|screw|schroef|DIN\s*976)\b"
+)
+_HOLE_FIT_PATTERN = re.compile(
+    r"(?:Ø|⌀|\bO)\s*[0-9]+(?:[.,][0-9]+)?\s*(?:[A-Z][0-9]{1,2}|[+-])"
+)
+_SHAFT_FIT_PATTERN = re.compile(
+    r"(?:Ø|⌀|\bO)\s*[0-9]+(?:[.,][0-9]+)?\s*[a-z][0-9]{1,2}\b"
+)
+
+
+def _item_manufacturing_context(item: dict[str, Any]) -> str:
+    """Collect text used only to reject component/BOM false positives."""
+
+    values = [
+        _clean_text(item.get("partNumber")),
+        _clean_text(item.get("description")),
+        _clean_text(item.get("notes")),
+    ]
+    for bom_item in item.get("bomItems") or []:
+        if not isinstance(bom_item, dict):
+            continue
+        values.extend(
+            _clean_text(bom_item.get(field))
+            for field in ("partNumber", "description", "material")
+        )
+    analysis = item.get("technicalAnalysis")
+    if isinstance(analysis, dict):
+        values.extend(
+            _clean_text(analysis.get(field))
+            for field in ("conclusion", "weldingNotes", "coatingRequirements")
+        )
+    return " ".join(value for value in values if value)
+
+
+def _is_additional_pdf_feature(code: str, evidence: str, context: str = "") -> bool:
+    """Accept only explicit PDF information that adds to STEP geometry."""
+
+    if not code or not _has_value(evidence):
+        return False
+    if code == "BEND":
+        return False
+    if code in _EXPLICIT_OPERATION_PATTERNS:
+        return bool(_EXPLICIT_OPERATION_PATTERNS[code].search(evidence))
+    if code == "TAP":
+        if _TAP_TERM_PATTERN.search(evidence):
+            return True
+        if _THREAD_COMPONENT_PATTERN.search(f"{evidence} {context}"):
+            return False
+        return bool(_THREAD_SIZE_PATTERN.search(evidence))
+    if code == "FIT_HOLE":
+        if _SHAFT_FIT_PATTERN.search(evidence):
+            return False
+        return bool(_HOLE_FIT_PATTERN.search(evidence))
+    return True
+
+
+def _preserve_shaft_tolerance(item: dict[str, Any], evidence: str) -> str:
+    """Keep an explicit shaft fit without turning it into a TURN operation."""
+
+    match = _SHAFT_FIT_PATTERN.search(evidence)
+    if not match:
+        return ""
+    callout = match.group(0).strip()
+    tolerances = [
+        row for row in item.get("toleratedLengths") or [] if isinstance(row, dict)
+    ]
+    if not any(_clean_text(row.get("evidence")) == callout for row in tolerances):
+        tolerances.append(
+            {
+                "dimension": callout,
+                "toleranceType": "shaft_fit",
+                "relatedFeature": "shaft",
+                "evidence": callout,
+            }
+        )
+    item["toleratedLengths"] = tolerances
+    return callout
+
+
+def filter_additional_pdf_features(data: dict[str, Any]) -> None:
+    """Remove geometry-derived features that belong to the STEP engine.
+
+    The filter is intentionally conservative: a structured row survives only
+    when its evidence contains an explicit additional manufacturing callout.
+    Material, BOM, surface, roughness, welding and tolerance signals remain
+    available because those cannot reliably be derived from STEP geometry.
+    """
+
+    items = [item for item in data.get("items") or [] if isinstance(item, dict)]
+    item_contexts = [_item_manufacturing_context(item) for item in items]
+
+    for item, context in zip(items, item_contexts):
+        operations: list[dict[str, Any]] = []
+        for operation in item.get("machiningOperations") or []:
+            if not isinstance(operation, dict):
+                continue
+            code = _clean_code(operation.get("normalizedCode"))
+            evidence = " ".join(
+                value
+                for value in (
+                    _clean_text(operation.get("evidence")),
+                    _clean_text(operation.get("notes")),
+                    _clean_text(operation.get("relatedFeature")),
+                )
+                if value
+            )
+            if code in {"TURN", "FIT_HOLE", "TOLERANCE"}:
+                _preserve_shaft_tolerance(item, evidence)
+            if code == "TOLERANCE":
+                continue
+            if _is_additional_pdf_feature(code, evidence, context):
+                operations.append(operation)
+        item["machiningOperations"] = operations
+
+        holes: list[dict[str, Any]] = []
+        for hole in item.get("holes") or []:
+            if not isinstance(hole, dict):
+                continue
+            code = _clean_code(hole.get("normalizedCode"))
+            evidence = " ".join(
+                value
+                for value in (
+                    _clean_text(hole.get("evidence")),
+                    _clean_text(hole.get("notes")),
+                    _clean_text(hole.get("location")),
+                )
+                if value
+            )
+            if code == "FIT_HOLE":
+                _preserve_shaft_tolerance(item, evidence)
+            if code in HOLE_OPERATION_CODES and _is_additional_pdf_feature(
+                code, evidence, context
+            ):
+                holes.append(hole)
+        item["holes"] = holes
+
+    filtered_signals: list[dict[str, Any]] = []
+    seen_signals: set[tuple[str, str]] = set()
+    for signal in data.get("detectedSignals") or []:
+        if not isinstance(signal, dict):
+            continue
+        code = _clean_code(signal.get("category"))
+        raw_value = _clean_text(signal.get("rawValue"))
+        signal_context = _clean_text(signal.get("context"))
+        matching_contexts = [
+            context
+            for item, context in zip(items, item_contexts)
+            if _signal_context_applies(signal, item, len(items))
+        ]
+        context = " ".join([signal_context, *matching_contexts])
+        if code in {"TURN", "FIT_HOLE", "TOLERANCE"}:
+            matching_items = [
+                item
+                for item in items
+                if _signal_context_applies(signal, item, len(items))
+            ]
+            callout = ""
+            for item in matching_items:
+                callout = _preserve_shaft_tolerance(item, raw_value) or callout
+            if callout:
+                key = ("TOLERANCE", callout)
+                if key not in seen_signals:
+                    converted = dict(signal)
+                    converted["category"] = "TOLERANCE"
+                    converted["rawValue"] = callout
+                    filtered_signals.append(converted)
+                    seen_signals.add(key)
+                if code != "TOLERANCE":
+                    continue
+        if _is_additional_pdf_feature(code, raw_value, context):
+            key = (code, raw_value)
+            if key not in seen_signals:
+                filtered_signals.append(signal)
+                seen_signals.add(key)
+    data["detectedSignals"] = filtered_signals
+
+
 def _int_count(value: Any) -> int:
     try:
         parsed = int(value)
@@ -269,7 +468,9 @@ def _merge_text(existing: Any, new: Any) -> str:
     return f"{existing_text} | {new_text}"
 
 
-def _merge_list_field(target: dict[str, Any], incoming: dict[str, Any], field: str) -> None:
+def _merge_list_field(
+    target: dict[str, Any], incoming: dict[str, Any], field: str
+) -> None:
     incoming_values = incoming.get(field)
     if not isinstance(incoming_values, list):
         return
@@ -286,7 +487,9 @@ def _merge_list_field(target: dict[str, Any], incoming: dict[str, Any], field: s
         target[field] = merged
 
 
-def _merge_dict_field(target: dict[str, Any], incoming: dict[str, Any], field: str) -> None:
+def _merge_dict_field(
+    target: dict[str, Any], incoming: dict[str, Any], field: str
+) -> None:
     incoming_value = incoming.get(field)
     if not isinstance(incoming_value, dict):
         return
@@ -394,9 +597,11 @@ def normalize_machining_operations(data: dict[str, Any]) -> None:
                 for field in ("evidence", "notes", "surfaceTreatment", "rawValue")
             ):
                 continue
-            if code == "TAP" and _clean_text(operation.get("tolerance")).upper() == _clean_text(
-                operation.get("threadSize")
-            ).upper():
+            if (
+                code == "TAP"
+                and _clean_text(operation.get("tolerance")).upper()
+                == _clean_text(operation.get("threadSize")).upper()
+            ):
                 operation.pop("tolerance", None)
             key = (
                 code,
@@ -432,12 +637,16 @@ def normalize_machining_operations(data: dict[str, Any]) -> None:
                 "relatedFeature",
                 "targetField",
             ):
-                if not _has_value(existing.get(field)) and _has_value(operation.get(field)):
+                if not _has_value(existing.get(field)) and _has_value(
+                    operation.get(field)
+                ):
                     existing[field] = operation.get(field)
             existing["evidence"] = _merge_text(
                 existing.get("evidence"), operation.get("evidence")
             )
-            existing["notes"] = _merge_text(existing.get("notes"), operation.get("notes"))
+            existing["notes"] = _merge_text(
+                existing.get("notes"), operation.get("notes")
+            )
 
         item["machiningOperations"] = merged
 
@@ -474,9 +683,10 @@ def normalize_holes(data: dict[str, Any]) -> None:
                     thread_size = _extract_thread_size(evidence)
                     if thread_size:
                         hole["threadSize"] = thread_size
-                if _clean_text(hole.get("tolerance")).upper() == _clean_text(
-                    hole.get("threadSize")
-                ).upper():
+                if (
+                    _clean_text(hole.get("tolerance")).upper()
+                    == _clean_text(hole.get("threadSize")).upper()
+                ):
                     hole.pop("tolerance", None)
             if code in HOLE_OPERATION_CODES and evidence:
                 if not _has_value(hole.get("diameter")):
@@ -513,7 +723,9 @@ def normalize_holes(data: dict[str, Any]) -> None:
                 existing["count"] = max(existing_count, new_count)
             else:
                 existing["count"] = existing_count + new_count
-            existing["evidence"] = _merge_text(existing.get("evidence"), hole.get("evidence"))
+            existing["evidence"] = _merge_text(
+                existing.get("evidence"), hole.get("evidence")
+            )
             existing["notes"] = _merge_text(existing.get("notes"), hole.get("notes"))
 
         item["holes"] = merged
@@ -539,9 +751,9 @@ def _operation_for_code(code: str) -> str:
         "DEBURR": "deburring",
         "MILL": "milling",
         "TURN": "turning",
-        "BEND": "bending",
         "WELD": "welding",
         "SURFACE_TREATMENT": "surface treatment",
+        "HEAT_TREATMENT": "heat treatment",
     }.get(code, code.lower())
 
 
@@ -610,7 +822,9 @@ def _operation_key(operation: dict[str, Any]) -> tuple[str, str, str, str, str, 
     )
 
 
-def _signal_context_applies(signal: dict[str, Any], item: dict[str, Any], item_count: int) -> bool:
+def _signal_context_applies(
+    signal: dict[str, Any], item: dict[str, Any], item_count: int
+) -> bool:
     context = _clean_text(signal.get("context"))
     if not context and item_count == 1:
         return True
@@ -635,7 +849,14 @@ def backfill_operations_from_signals(data: dict[str, Any]) -> None:
                 continue
             code = _clean_code(signal.get("category"))
             raw_value = _clean_text(signal.get("rawValue"))
-            if not _has_value(raw_value) or code not in HOLE_OPERATION_CODES | {"DEBURR", "MILL", "TURN", "BEND", "WELD", "SURFACE_TREATMENT"}:
+            if not _has_value(raw_value) or code not in HOLE_OPERATION_CODES | {
+                "DEBURR",
+                "MILL",
+                "TURN",
+                "WELD",
+                "SURFACE_TREATMENT",
+                "HEAT_TREATMENT",
+            }:
                 continue
             if not _signal_context_applies(signal, item, len(items)):
                 continue
@@ -662,7 +883,9 @@ def backfill_operations_from_signals(data: dict[str, Any]) -> None:
             if cutting_size:
                 operation["cuttingSize"] = cutting_size
             if code in HOLE_OPERATION_CODES and count is None:
-                operation["notes"] = "Count not explicit in detected signal; verify against drawing or STEP geometry."
+                operation["notes"] = (
+                    "Count not explicit in detected signal; verify against drawing or STEP geometry."
+                )
 
             key = _operation_key(operation)
             if key in operation_keys:
@@ -845,7 +1068,10 @@ def build_tolerated_length_instructions(config: CustomerConfig) -> str:
     lines = []
     for i, signal in enumerate(config.signals.tolerated_lengths):
         pattern = signal.pattern or "unknown pattern"
-        desc = signal.description or "treat as critical tolerance, add to toleratedLengths."
+        desc = (
+            signal.description
+            or "treat as critical tolerance, add to toleratedLengths."
+        )
         lines.append(f'          - Pattern {i + 1}: "{pattern}" -> {desc}')
 
     return "\n".join(lines)
@@ -860,9 +1086,21 @@ def build_hole_instructions(config: CustomerConfig) -> str:
     for i, hole in enumerate(config.signals.holes):
         pattern = hole.pattern or "unknown hole pattern"
         h_type = hole.capture.get("type", "normal") if hole.capture else "normal"
-        diameter = f", diameter={hole.capture['diameter']}" if hole.capture and hole.capture.get("diameter") else ""
-        thread = f", threadSize={hole.capture['threadSize']}" if hole.capture and hole.capture.get("threadSize") else ""
-        tolerance = f", tolerance='{hole.capture['tolerance']}'" if hole.capture and hole.capture.get("tolerance") else ""
+        diameter = (
+            f", diameter={hole.capture['diameter']}"
+            if hole.capture and hole.capture.get("diameter")
+            else ""
+        )
+        thread = (
+            f", threadSize={hole.capture['threadSize']}"
+            if hole.capture and hole.capture.get("threadSize")
+            else ""
+        )
+        tolerance = (
+            f", tolerance='{hole.capture['tolerance']}'"
+            if hole.capture and hole.capture.get("tolerance")
+            else ""
+        )
         lines.append(
             f'          - Recipe {i + 1}: When you see "{pattern}", '
             f"set type='{h_type}'{diameter}{thread}{tolerance}."
@@ -871,7 +1109,9 @@ def build_hole_instructions(config: CustomerConfig) -> str:
     return "\n".join(lines)
 
 
-def build_surface_treatment_instructions(config: CustomerConfig, customer_name: str) -> str:
+def build_surface_treatment_instructions(
+    config: CustomerConfig, customer_name: str
+) -> str:
     """Build surface treatment instructions from config."""
     if config.surface_treatments and config.surface_treatments.enabled:
         options_text = "\n            ".join(
@@ -891,7 +1131,9 @@ def build_material_instructions(config: CustomerConfig) -> str:
     if config.prompt_additions and config.prompt_additions.material:
         material_rules.extend(config.prompt_additions.material)
 
-    material_rules = [r.strip() for r in material_rules if isinstance(r, str) and r.strip()]
+    material_rules = [
+        r.strip() for r in material_rules if isinstance(r, str) and r.strip()
+    ]
 
     if not material_rules:
         return "          - Note: No special material patterns defined."
@@ -901,7 +1143,7 @@ def build_material_instructions(config: CustomerConfig) -> str:
 
 async def extract_order_details_from_pdf(
     pdf_base64: str,
-    options: Optional[ExtractionOptions] = None,
+    options: ExtractionOptions | None = None,
 ) -> OrderDetails:
     """
     Extract order details from a PDF using Gemini API.
@@ -930,11 +1172,15 @@ async def extract_order_details_from_pdf(
 
     # Build instruction strings
     max_signal_entries = get_max_signal_prompt_entries(config)
-    text_signals_section, _ = build_text_signals_section(text_signals, max_signal_entries)
+    text_signals_section, _ = build_text_signals_section(
+        text_signals, max_signal_entries
+    )
 
     tolerated_length_instructions = build_tolerated_length_instructions(config)
     hole_instructions = build_hole_instructions(config)
-    surface_treatment_instructions = build_surface_treatment_instructions(config, customer_name)
+    surface_treatment_instructions = build_surface_treatment_instructions(
+        config, customer_name
+    )
     material_instructions = build_material_instructions(config)
 
     # Build prompt additions dict
@@ -1017,7 +1263,9 @@ async def extract_order_details_from_pdf(
     if "items" in data:
         for item in data["items"]:
             normalized = normalize_surface_treatment(item.get("surfaceTreatment"))
-            fixed = apply_customer_surface_treatment_fixes(customer_id, normalized, is_assembly)
+            fixed = apply_customer_surface_treatment_fixes(
+                customer_id, normalized, is_assembly
+            )
             if fixed != normalized:
                 item["surfaceTreatment"] = fixed or "None"
 
@@ -1027,17 +1275,29 @@ async def extract_order_details_from_pdf(
     normalize_machining_operations(data)
     backfill_holes_from_operations(data)
     normalize_holes(data)
+    filter_additional_pdf_features(data)
     backfill_detected_signals(data)
+
+    # Keep OCR signals only when Gemini verified the same evidence. OCR cues are
+    # hints, not an independent source of manufacturing truth.
+    if text_signals:
+        verified_keys = {
+            (_clean_code(signal.get("category")), _clean_text(signal.get("rawValue")))
+            for signal in data.get("detectedSignals") or []
+            if isinstance(signal, dict)
+        }
+        signals = data.setdefault("detectedSignals", [])
+        for text_signal in text_signals:
+            signal = text_signal.model_dump(by_alias=True, exclude_none=True)
+            key = (
+                _clean_code(signal.get("category")),
+                _clean_text(signal.get("rawValue")),
+            )
+            if key in verified_keys:
+                signals.append(signal)
 
     # Create OrderDetails model
     order_details = OrderDetails(**data)
-
-    # Attach text signals for traceability
-    if text_signals:
-        if order_details.detected_signals:
-            order_details.detected_signals.extend(text_signals)
-        else:
-            order_details.detected_signals = text_signals
 
     return order_details
 
@@ -1045,10 +1305,11 @@ async def extract_order_details_from_pdf(
 # Synchronous wrapper for simpler usage
 def extract_order_details_from_pdf_sync(
     pdf_base64: str,
-    options: Optional[ExtractionOptions] = None,
+    options: ExtractionOptions | None = None,
 ) -> OrderDetails:
     """Synchronous version of extract_order_details_from_pdf."""
     import asyncio
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -1057,8 +1318,11 @@ def extract_order_details_from_pdf_sync(
     if loop is not None:
         # Already in async context - create new loop in thread
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(asyncio.run, extract_order_details_from_pdf(pdf_base64, options))
+            future = executor.submit(
+                asyncio.run, extract_order_details_from_pdf(pdf_base64, options)
+            )
             return future.result()
     else:
         return asyncio.run(extract_order_details_from_pdf(pdf_base64, options))

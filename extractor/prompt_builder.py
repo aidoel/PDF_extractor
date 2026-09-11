@@ -1,7 +1,6 @@
 """Prompt builder for Gemini API extraction."""
 
 from dataclasses import dataclass
-from typing import Optional
 
 from .types import TextSignal
 
@@ -9,14 +8,15 @@ from .types import TextSignal
 @dataclass
 class PromptInput:
     """Input for building the extraction prompt."""
+
     customer_name: str
     images_count: int
     tolerated_length_instructions: str
     hole_instructions: str
     surface_treatment_instructions: str
     material_instructions: str
-    text_signals_section: Optional[str] = None
-    prompt_additions: Optional[dict[str, list[str]]] = None
+    text_signals_section: str | None = None
+    prompt_additions: dict[str, list[str]] | None = None
 
 
 def build_text_signals_section(
@@ -31,8 +31,10 @@ def build_text_signals_section(
     """
     if not signals:
         return (
-            "      ### Detected Text Cues (OCR - for REFERENCE ONLY)\n"
-            "        - No OCR matches found. Extract information ONLY from what you SEE in the actual PDF images.",
+            (
+                "      ### Detected Text Cues (OCR - for REFERENCE ONLY)\n"
+                "        - No OCR matches found. Extract information ONLY from what you SEE in the actual PDF images."
+            ),
             0,
         )
 
@@ -49,7 +51,11 @@ def build_text_signals_section(
             f"(page {s.page}, {s.source}){ctx_part}"
         )
 
-    extra_line = f"\n        ...and {truncated_count} additional cue(s) not listed." if truncated_count > 0 else ""
+    extra_line = (
+        f"\n        ...and {truncated_count} additional cue(s) not listed."
+        if truncated_count > 0
+        else ""
+    )
 
     section = f"""      ### Detected Text Cues (OCR - for REFERENCE ONLY)
 
@@ -83,7 +89,12 @@ def build_technical_assembly_prompt(
 ) -> str:
     """Build the structured vision prompt for a main assembly drawing."""
 
-    return f"""Analyse this MAIN ASSEMBLY technical drawing for manufacturing.
+    return f"""Analyse this MAIN ASSEMBLY technical drawing for additional manufacturing instructions.
+
+This PDF analysis complements a STEP analysis. STEP is authoritative for part
+geometry, contours, ordinary holes and bends. Extract only information that is
+explicitly written or symbolically called out on the PDF and that STEP cannot
+reliably provide.
 
 Read the visible drawing itself, including title block, BOM, dimensions, GD&T,
 notes, welding instructions and surface-treatment fields. The PDF may contain
@@ -94,15 +105,28 @@ Return exactly one item and populate:
 - partNumber, revision, description, material and surfaceTreatment;
 - bomItems with position, partNumber, quantity, description and material;
 - bomPartNumbers with the part numbers from bomItems;
-- holes, toleratedLengths and machiningOperations only when explicitly shown;
+- holes only for explicit additional instructions such as tapping, reaming,
+  countersinking, counterboring or a hole fit/tolerance;
+- toleratedLengths and machiningOperations only for explicit written or
+  symbolically called-out requirements;
 - technicalAnalysis with manufacturabilityStatus, a short conclusion,
   positiveChecks, risks, weldingNotes, coatingRequirements, revisionNotes,
-  gdtRequirements, generalTolerances and assemblyDimensions.
+  gdtRequirements and generalTolerances. Leave assemblyDimensions empty.
 
 Rules:
 - Use only evidence visible in this PDF. Do not invent missing specifications.
-- Put unclear or missing production information in risks with severity
-  blocker, warning or info.
+- Never return BEND for bend lines, angles or formed geometry. STEP already owns
+  bend detection. Only a special explicit bend tolerance may be returned as a
+  tolerance signal, never as BEND.
+- Do not infer DRILL, MILL or TURN from geometry, dimensions, pockets, slots,
+  shafts or surface appearance. Return these only when the operation itself is
+  explicitly written on the PDF.
+- A plain diameter callout is not an additional PDF hole signal.
+- M6/M8/M16 notation is TAP only when it is a hole callout. Threaded rods,
+  studs, bolts, screws and BOM component descriptions are not tapped holes.
+- Add a risk only when it is directly supported by an explicit PDF note,
+  requirement or contradiction; include the exact evidence. Do not report
+  missing or difficult geometry as a PDF risk.
 - Preserve exact values and units in evidence strings.
 - Check arithmetic dimension chains only when every operand is visible.
 - Do not claim that STEP or ERP agrees unless those sources are supplied.
@@ -136,41 +160,55 @@ def build_minimal_prompt(p: PromptInput) -> str:
 
     return f"""Extract manufacturing data from technical drawing PDF.
 
-**EXTRACT THESE MANUFACTURING FEATURES:**
+This PDF analysis complements a STEP analysis. STEP is authoritative for part
+geometry, contours, ordinary holes and bends. Extract only information that is
+explicitly written or symbolically called out on the PDF and that STEP cannot
+reliably provide.
+
+**EXTRACT ONLY THESE ADDITIONAL MANUFACTURING FEATURES:**
 1. Surface treatment (HIGHEST PRIORITY - check BOM first!)
-2. Holes and hole operations (drilled, tapped, reamed, countersunk, fitted)
-3. Toleranced dimensions and toleranced holes
+2. Explicit special hole instructions (tapped, reamed, countersunk,
+   counterbored, fitted/toleranced, or explicitly stated drilling)
+3. Explicit tolerances, fits, roughness and GD&T requirements
 4. Material
 5. BOM part numbers (if drawing has a BOM table)
-6. Machining operations and manufacturing notes
+6. Explicit manufacturing notes such as deburring, welding and heat treatment
 7. Mapping signals for ERP/calculation review
 
 **RULES:**
 - Return 1 item per PDF ({p.images_count} image(s) of same part)
 - Extract only what's clearly visible
 - Use null/"None" if unsure
-- Ignore: general dimensions, metadata
+- Ignore: general dimensions, metadata, geometric bends, contours, pockets,
+  slots and ordinary holes already present in STEP
 - Never hide a concrete hole or machining operation only in technicalAnalysis.
   Also put it in holes and/or machiningOperations with evidence.
 - For every concrete manufacturing term, also add a detectedSignals entry with
   category = the normalized code and rawValue = the exact visible term.
+- Never classify a feature from geometry alone. The evidence must contain the
+  exact written operation, requirement or recognized technical symbol.
 
 **NORMALIZED CODES FOR MAPPING:**
-- DRILL: normal drilled/cut holes such as O12.5 or simple clearance holes
-- TAP: tapped/threaded holes such as M6, 4x M8, thread, tapped
-- REAM: reamed holes, ruiming/ruimen, reaming, H7/H8/H9 with reaming note
+- DRILL: only an explicitly written drilling/boring instruction, never a plain diameter
+- TAP: tapped/threaded hole callouts such as M6, 4x M8, draadgat, thread, tapped
+- REAM: explicitly written ruimen/ruiming/ream/reaming instructions
 - FIT_HOLE: hole fit/tolerance such as H7, H8, H9, F7, +0.6/+0.1 on a hole
 - COUNTERSINK: countersunk/verzonken holes
 - COUNTERBORE: counterbore/spotface/cilinderverzinking
-- MILL: milling/frezen/freesbewerking, pockets, slots, milled surfaces
-- TURN: turning/draaien/draaiwerk
-- BEND: bending/zetten/kanten
+- MILL: only explicitly written milling/frezen/freesbewerking instructions
+- TURN: only explicitly written turning/draaien/draaiwerk instructions
 - WELD: welding/lassen
 - DEBURR: break sharp edges, ontbramen, sharp edges removed
 - SURFACE_TREATMENT: coating, galvanizing, blasting, passivating, painting
+- HEAT_TREATMENT: explicit annealing, hardening or stress-relief requirements
 - ROUGHNESS: Ra/Rz surface roughness requirements
+- TOLERANCE: an explicit dimensional, shaft-fit or GD&T requirement that is
+  relevant to manufacturing but is not a hole operation
 - BOM: BOM row or referenced child part
 - MATERIAL: material grade, thickness or stock specification
+
+Do not return BEND. A bend angle or bend line belongs to STEP and is not an
+additional PDF manufacturing signal.
 
 **1. SURFACE TREATMENT (CHECK THIS FIRST!):**
 - **CRITICAL**: Scan the entire BOM table (bottom right) for coating keywords
@@ -180,18 +218,19 @@ def build_minimal_prompt(p: PromptInput) -> str:
 - Examples: "Verzinkt", "Poedercoaten", "Coating Dynamic", or "None"{surface_additions}
 
 **2. HOLES:**
-- Every visible hole callout must create a holes row. Do not skip ordinary
-  drilled/cut holes just because STEP may also contain geometry.
-- Normal: "O20" -> normalizedCode=DRILL, type=normal, diameter=20
-- Tapped: "M6" or "4x M6" -> normalizedCode=TAP, type=tapped, threadSize=M6, count=4
+- Create a holes row only for an explicit additional manufacturing instruction.
+- Do not return ordinary circular geometry or a plain diameter such as "O20";
+  STEP already supplies the hole and its diameter.
+- Tapped: "M6" or "4x M6" -> normalizedCode=TAP only when the notation points
+  to a hole; type=tapped, threadSize=M6, count=4.
+- M-thread notation in a BOM or in descriptions of threaded rod, stud, bolt,
+  screw, draadstang, draadeind, bout or schroef is not a TAP hole.
 - Reamed: "Reaming O20H9 / Cutting Size O19.5" -> normalizedCode=REAM,
   type=reamed, diameter=20, tolerance=H9, cuttingSize=19.5,
   operation=reaming
 - Fitted/toleranced hole: "O40 +0.6/+0.1" -> normalizedCode=FIT_HOLE,
   type=normal, diameter=40, upperTolerance=+0.6, lowerTolerance=+0.1
 - Countersunk: "verzonken", "countersink", "DIN 74" -> normalizedCode=COUNTERSINK
-- Plain holes that have a visible diameter but no operation note still matter
-  for PDF/STEP comparison and must be returned as DRILL.
 - Use count=1 for each separate visible location when no explicit count is
   printed. Duplicate rows with the same diameter/fit may later be merged.
 - **CRITICAL**: Same hole at MULTIPLE locations -> create SEPARATE entries for EACH (don't combine unless labeled "2x"){hole_additions}
@@ -230,8 +269,10 @@ def build_minimal_prompt(p: PromptInput) -> str:
 - Only extract part numbers that refer to OTHER parts/components
 
 **6. MACHINING OPERATIONS AND MANUFACTURING NOTES:**
-- Populate machiningOperations for every visible operation-relevant note, even
+- Populate machiningOperations only for explicit additional instructions, even
   when the same information is also represented in holes.
+- Do not add BEND from bend lines or angles. Do not add MILL, TURN or DRILL from
+  shape or dimensions; their operation word must be visibly written.
 - Use the normalized codes above. Set targetField="Borengaten" for DRILL, TAP,
   REAM, FIT_HOLE, COUNTERSINK and COUNTERBORE.
 - Examples:
@@ -248,6 +289,7 @@ def build_minimal_prompt(p: PromptInput) -> str:
   special tolerance, add detectedSignals with:
   category=<normalized code>, rawValue=<exact visible term>, source="vision".
 - These signals are used for PdfTermTbl and PdfTermMappingTbl grouping.
+- Do not add geometry-only BEND, DRILL, MILL or TURN signals.
 
 **Customer: {p.customer_name}**
 

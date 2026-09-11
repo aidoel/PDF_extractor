@@ -4,6 +4,7 @@ from extractor.gemini_service import (
     backfill_holes_from_operations,
     backfill_item_fields_from_signals,
     backfill_operations_from_signals,
+    filter_additional_pdf_features,
     merge_duplicate_items,
     normalize_holes,
     normalize_machining_operations,
@@ -31,6 +32,121 @@ def test_prompt_requires_mapping_ready_manufacturing_features() -> None:
     assert "machiningOperations" in prompt
     assert "detectedSignals" in prompt
     assert "targetField=Borengaten" in prompt
+    assert "Do not return BEND" in prompt
+    assert "plain diameter" in prompt
+    assert "- BEND:" not in prompt
+
+
+def test_filter_removes_step_geometry_and_threaded_rod_false_positive() -> None:
+    data = {
+        "items": [
+            {
+                "partNumber": "MD-20-07032_1",
+                "description": "Assembly with two threaded rods",
+                "bomItems": [
+                    {
+                        "partNumber": "M16-ROD",
+                        "description": "Threaded rod DIN 976-1 M16",
+                    }
+                ],
+                "machiningOperations": [
+                    {"normalizedCode": "BEND", "evidence": "bend angle 15°"},
+                    {"normalizedCode": "TURN", "evidence": "Ø25 h6"},
+                    {"normalizedCode": "DRILL", "evidence": "Ø12.5"},
+                    {"normalizedCode": "TAP", "evidence": "M16"},
+                    {"normalizedCode": "DEBURR", "evidence": "Break sharp edges"},
+                ],
+                "holes": [
+                    {"normalizedCode": "DRILL", "evidence": "Ø12.5"},
+                    {"normalizedCode": "TAP", "evidence": "M16"},
+                ],
+            }
+        ],
+        "detectedSignals": [
+            {"category": "BEND", "rawValue": "bend angle 15°"},
+            {"category": "TURN", "rawValue": "Ø25 h6"},
+            {"category": "DRILL", "rawValue": "Ø12.5"},
+            {"category": "TAP", "rawValue": "M16"},
+            {"category": "DEBURR", "rawValue": "Break sharp edges"},
+        ],
+    }
+
+    filter_additional_pdf_features(data)
+
+    item = data["items"][0]
+    assert [row["normalizedCode"] for row in item["machiningOperations"]] == ["DEBURR"]
+    assert item["holes"] == []
+    assert [row["category"] for row in data["detectedSignals"]] == [
+        "TOLERANCE",
+        "DEBURR",
+    ]
+    assert data["items"][0]["toleratedLengths"] == [
+        {
+            "dimension": "Ø25 h6",
+            "toleranceType": "shaft_fit",
+            "relatedFeature": "shaft",
+            "evidence": "Ø25 h6",
+        }
+    ]
+
+
+def test_filter_keeps_explicit_additional_manufacturing_instructions() -> None:
+    data = {
+        "items": [
+            {
+                "partNumber": "10040853_1",
+                "machiningOperations": [
+                    {"normalizedCode": "TAP", "evidence": "4x M6 tapped holes"},
+                    {"normalizedCode": "REAM", "evidence": "2x ruim Ø20 H7"},
+                    {"normalizedCode": "COUNTERSINK", "evidence": "DIN 74 countersink"},
+                    {"normalizedCode": "DRILL", "evidence": "4 gaten boren Ø8"},
+                    {"normalizedCode": "MILL", "evidence": "vlak frezen"},
+                    {
+                        "normalizedCode": "HEAT_TREATMENT",
+                        "evidence": "spanningsarm gloeien",
+                    },
+                    {"normalizedCode": "BEND", "evidence": "zetten 90°"},
+                ],
+                "holes": [
+                    {"normalizedCode": "TAP", "evidence": "4x M6 tapped holes"},
+                    {"normalizedCode": "REAM", "evidence": "2x ruim Ø20 H7"},
+                    {"normalizedCode": "FIT_HOLE", "evidence": "Ø12 H7"},
+                ],
+            }
+        ],
+        "detectedSignals": [
+            {"category": "TAP", "rawValue": "4x M6 tapped holes"},
+            {"category": "REAM", "rawValue": "2x ruim Ø20 H7"},
+            {"category": "FIT_HOLE", "rawValue": "Ø12 H7"},
+            {"category": "TOLERANCE", "rawValue": "Ø25 h6"},
+            {"category": "SURFACE_TREATMENT", "rawValue": "poedercoaten RAL 7016"},
+            {"category": "BEND", "rawValue": "zetten 90°"},
+        ],
+    }
+
+    filter_additional_pdf_features(data)
+
+    item = data["items"][0]
+    assert {row["normalizedCode"] for row in item["machiningOperations"]} == {
+        "TAP",
+        "REAM",
+        "COUNTERSINK",
+        "DRILL",
+        "MILL",
+        "HEAT_TREATMENT",
+    }
+    assert {row["normalizedCode"] for row in item["holes"]} == {
+        "TAP",
+        "REAM",
+        "FIT_HOLE",
+    }
+    assert {row["category"] for row in data["detectedSignals"]} == {
+        "TAP",
+        "REAM",
+        "FIT_HOLE",
+        "TOLERANCE",
+        "SURFACE_TREATMENT",
+    }
 
 
 def test_schema_allows_structured_holes_and_operations() -> None:
@@ -113,25 +229,25 @@ def test_xml_keeps_holes_operations_and_evidence() -> None:
                     },
                 ],
             }
-        ]
+        ],
     )
 
     xml = build_simple_order_xml(data)
 
-    assert '<Material>S235</Material>' in xml
-    assert '<DetectedSignals>' in xml
+    assert "<Material>S235</Material>" in xml
+    assert "<DetectedSignals>" in xml
     assert 'category="REAM"' in xml
     assert 'rawValue="Reaming O20H9 / Cutting Size O19.5"' in xml
-    assert '<Holes>' in xml
+    assert "<Holes>" in xml
     assert 'normalizedCode="REAM"' in xml
     assert 'cuttingSize="19.5"' in xml
     assert 'normalizedCode="TAP"' in xml
     assert 'threadSize="M6"' in xml
     assert 'normalizedCode="FIT_HOLE"' in xml
     assert 'upperTolerance="+0.6"' in xml
-    assert '<MachiningOperations>' in xml
+    assert "<MachiningOperations>" in xml
     assert 'targetField="Borengaten"' in xml
-    assert '<Evidence>Reaming O20H9 / Cutting Size O19.5</Evidence>' in xml
+    assert "<Evidence>Reaming O20H9 / Cutting Size O19.5</Evidence>" in xml
 
 
 def test_post_processing_derives_holes_and_mapping_signals_from_operations() -> None:
@@ -325,8 +441,7 @@ def test_post_processing_merges_signal_backfill_with_existing_operations() -> No
     assert ream_operations[0]["count"] == 2
     assert ream_operations[0]["tolerance"] == "H9"
     assert all(
-        operation["normalizedCode"] != "SURFACE_TREATMENT"
-        for operation in operations
+        operation["normalizedCode"] != "SURFACE_TREATMENT" for operation in operations
     )
     assert {
         (hole["normalizedCode"], hole.get("threadSize"), hole.get("tolerance"))
@@ -391,7 +506,11 @@ def test_post_processing_merges_duplicate_pdf_item_fragments() -> None:
     assert item["description"] == "Sheet"
     assert item["material"] == "S235"
     assert {
-        (operation["normalizedCode"], operation.get("diameter"), operation.get("threadSize"))
+        (
+            operation["normalizedCode"],
+            operation.get("diameter"),
+            operation.get("threadSize"),
+        )
         for operation in item["machiningOperations"]
     } == {
         ("TAP", None, "M6"),
